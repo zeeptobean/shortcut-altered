@@ -60,6 +60,10 @@ long long my_hash_function(char *str, long long num1, long long num2, long long 
     return 0;
 }
 
+void newfunction() {
+    
+}
+
 void version() {
     #if defined(__GNUC__)
         printf("Built with GCC %d.%d.%d ", __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__);
