@@ -96,10 +96,11 @@ void recover() {
 
 /// @brief Find all shortcut in the folder specified by the CDISL id and "edit" it
 /// @param cdisl_id the CDISL id of the folder
+/// @param is_safe indicate if original icon backup is required
 /// @param backupfolder_name the name, for the backup folder in AppData
 /// @param errorstring the return error string if error occured 
 /// @return zero if success, non-zero otherwise
-int proceed_shortcut(int cdisl_id, WCHAR *backupfolder_name, char *errorstring) {
+long proceed_shortcut(int cdisl_id, int is_safe, WCHAR *backupfolder_name, char *errorstring) {
     //dirdeskpath: directory path with trailing splash for appending file
     //deskpath: directory path contains '*' for file searching
     //linkpath: full path of the .lnk file
@@ -113,7 +114,9 @@ int proceed_shortcut(int cdisl_id, WCHAR *backupfolder_name, char *errorstring) 
             backuplinkpath[5002], backupstorepath[5002], *extname;
     HANDLE findfilehnd; 
     WIN32_FIND_DATAW filedataptr;
-    HRESULT res;
+    IShellLinkW *ishlinkptr;
+    IPersistFile *ipfileptr;
+    long res = 0;
 
     res = SHGetFolderPathW(NULL, cdisl_id, NULL, 0, dirdeskpath);
     if(SUCCEEDED(res)) {            //long if-else begin
@@ -124,13 +127,68 @@ int proceed_shortcut(int cdisl_id, WCHAR *backupfolder_name, char *errorstring) 
 
         findfilehnd = FindFirstFileW(deskpath, &filedataptr);
         do {
-            
-        } while(FindNextFileW(findfilehnd, &filedataptr));
+            extname = PathFindExtensionW(filedataptr.cFileName);
+            if(!wcscmp(extname, L".lnk")) {
+                wcscpy(linkpath, dirdeskpath);
+                wcscat(linkpath, filedataptr.cFileName);
 
+                res = CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_IShellLinkW, (void**) &ishlinkptr);
+                if(!SUCCEEDED(res)) {
+                    strcpy(errorstring, "failed somewhere");
+                    goto proceedshortcut__cleanup;
+                }
+                res = ishlinkptr->QueryInterface(IID_IPersistFile, (void**) &ipfileptr);
+                if(!SUCCEEDED(res)) {
+                    strcpy(errorstring, "failed somewhere");
+                    goto proceedshortcut__cleanup;
+                }
+                res = ipfileptr->Load(linkpath, STGM_READ);
+                if(!SUCCEEDED(res)) {
+                    strcpy(errorstring, "failed somewhere");
+                    goto proceedshortcut__cleanup;
+                }
+                res = ishlinkptr->Resolve(NULL, 1);
+                if(!SUCCEEDED(res)) {
+                    strcpy(errorstring, "failed somewhere");
+                    goto proceedshortcut__cleanup;
+                }
+
+                //backup
+                if(is_safe) {
+                    wcscpy(backuplinkpath, backupstorepath);
+                    wcscat(backuplinkpath, backupfolder_name);
+                    wcscat(backuplinkpath, L"\\");
+                    if(!CreateDirectoryW(backuplinkpath, NULL)) {
+                        if(GetLastError() != ERROR_ALREADY_EXISTS) {
+                            strcpy(errorstring, "Unexpected error occured (create backup directory)");
+                            return ERROR_ALREADY_EXISTS;
+                        }
+                    }
+                }
+
+                res = ishlinkptr->SetIconLocation(iconpath, 0);
+                if(!SUCCEEDED(res)) {
+                    strcpy(errorstring, "failed somewhere");
+                    goto proceedshortcut__cleanup;
+                }
+                res = ipfileptr->Save(linkpath, TRUE);
+                if(!SUCCEEDED(res)) {
+                    strcpy(errorstring, "failed somewhere (saving back)");
+                    goto proceedshortcut__cleanup;
+                }
+            }
+        } while(FindNextFileW(findfilehnd, &filedataptr));
+        FindClose(findfilehnd);
     } else {
         strcpy(errorstring, "failed getting special folder");
-        return res;
+        goto proceedshortcut__cleanup;
     }
+
+    if(res >= 0) res = 0;
+    proceedshortcut__cleanup:
+    ishlinkptr->Release();
+    ipfileptr->Release();
+    return res;
 }
 
 int main(int argc, char* argv[]) {
@@ -150,8 +208,8 @@ int main(int argc, char* argv[]) {
     IShellLinkW* ishlinkptr;
     IPersistFile* ipfileptr;
     WIN32_FIND_DATAW filedataptr;
-    int iconindex;
-    bool __is_main_run = false, is_safe = true;
+    //int iconindex;
+    int is_safe = true;
 
     WCHAR __sh_alloc_tempstr[MAX_PATH];
     /*end declaration*/
@@ -217,79 +275,11 @@ int main(int argc, char* argv[]) {
     CloseHandle(ico_file_handle);
 
 
-    //get local desktop
-    func(SHGetFolderPathW(NULL, CSIDL_DESKTOPDIRECTORY, NULL, 0, __sh_alloc_tempstr));
+    char errstr[5001];
+    proceed_shortcut(CSIDL_DESKTOPDIRECTORY, is_safe, L"Desktop", errstr);
 
-    __main_run:
-    wcscpy(dirdeskpath, __sh_alloc_tempstr);
-    wcscat(dirdeskpath, L"\\");
-    wcscpy(deskpath, dirdeskpath);
-    wcscat(deskpath, L"*");
+    proceed_shortcut(CSIDL_COMMON_DESKTOPDIRECTORY, is_safe, L"PublicDesktop", errstr);
 
-    HANDLE findfilehnd = FindFirstFileW(deskpath, &filedataptr);
-    do {
-        extname = PathFindExtensionW(filedataptr.cFileName);
-        if(wcscmp(extname, L".lnk") == 0) {
-
-            wcscpy(linkpath, dirdeskpath);
-            wcscat(linkpath, filedataptr.cFileName);
-
-            WideCharToMultiByte(CP_UTF8, 0, linkpath, -1, mblinkpath, 5000, NULL, NULL);
-            printf("%s\n", mblinkpath);
-
-            inloop_func(CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_IShellLinkW, (void**) &ishlinkptr));
-            inloop_func(ishlinkptr->QueryInterface(IID_IPersistFile, (void**) &ipfileptr));
-            inloop_func(ipfileptr->Load(linkpath, STGM_READ));
-            inloop_func(ishlinkptr->Resolve(NULL, 1));
-            inloop_func(ishlinkptr->GetIconLocation(old_iconpath, 5000, &iconindex));
-            inloop_func(ishlinkptr->GetPath(filepath, 5000, NULL, SLGP_RAWPATH));
-
-            if(is_safe) {
-                wcscpy(backuplinkpath, backupstorepath);
-                wcscat(backuplinkpath, L"Desktop\\");   //TODO seperate 2 different desktop backup
-                if(!CreateDirectoryW(backuplinkpath, NULL)) {
-                    if(GetLastError() != ERROR_ALREADY_EXISTS) {
-                        printf("Unexpected error occured (create backup directory)");
-                        exit(EXIT_FAILURE);
-                    }
-                }
-                wcscat(backuplinkpath, filedataptr.cFileName);
-                
-                if(!CopyFileW(linkpath, backuplinkpath, FALSE)) {
-                    printf("Unexpected error occured (CopyFileW)");
-                    exit(EXIT_FAILURE);
-                }
-                // //debug
-                // WideCharToMultiByte(CP_UTF8, 0, linkpath, -1, mbiconpath, 5000, NULL, NULL);
-                // printf("Backup-ed path: %s\n", mbiconpath);
-            }
-
-            WideCharToMultiByte(CP_UTF8, 0, old_iconpath, -1, mbiconpath, 5000, NULL, NULL);
-            WideCharToMultiByte(CP_UTF8, 0, filepath, -1, mbfilepath, 5000, NULL, NULL);
-            printf("File location: %s \nIcon path: %s \nIcon index: %d\n", mbfilepath, mbiconpath, iconindex);
-
-            inloop_func(ishlinkptr->SetIconLocation(iconpath, 0));
-            inloop_func(ipfileptr->Save(linkpath, TRUE));
-
-            inloop_func(ishlinkptr->GetIconLocation(old_iconpath, 5000, &iconindex));
-            WideCharToMultiByte(CP_UTF8, 0, old_iconpath, -1, mbiconpath, 5000, NULL, NULL);
-            WideCharToMultiByte(CP_UTF8, 0, filepath, -1, mbfilepath, 5000, NULL, NULL);
-            printf("File location: %s \nIcon path: %s \nIcon index: %d\n\n\n", mbfilepath, mbiconpath, iconindex);
-
-            __FUNC_END_LOOP:
-            ipfileptr->Release();
-            ishlinkptr->Release();
-        }
-    } while(FindNextFileW(findfilehnd, &filedataptr) != 0);
-    FindClose(findfilehnd);
-
-    //get public desktop
-    func(SHGetFolderPathW(NULL, CSIDL_COMMON_DESKTOPDIRECTORY, NULL, 0, __sh_alloc_tempstr));
-
-    if(!__is_main_run) {
-        __is_main_run = true;
-        goto __main_run;
-    }
 
     CoUninitialize();
     return EXIT_SUCCESS;
